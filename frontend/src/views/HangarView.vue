@@ -135,8 +135,32 @@
 
         <div v-else-if="active.status === 'OCCUPIED'" class="inline-form">
           <el-button type="warning" @click="doRelease">安排出位（出厂）</el-button>
-          <span class="muted">停场待修的飞机排故未闭环不能出位</span>
+          <span class="muted">唯一出位入口：必须持有有效出厂放行，且放行对应当前这一轮维修事实</span>
         </div>
+
+        <!-- 出位放行核验（阻断原因全部来自服务端，前端不自行判断） -->
+        <el-alert
+          v-if="active.status === 'OCCUPIED' && departGate"
+          class="depart-gate"
+          :type="departGate.departable ? 'success' : 'error'"
+          :closable="false"
+          show-icon
+          :title="departGate.departable
+            ? '已持有有效放行（' + (departGate.releaseNo || '') + '），可执行出位'
+            : '出位被阻断'"
+        >
+          <div v-if="!departGate.departable">{{ departGate.message }}</div>
+          <div v-else-if="departGate.staleOrChanged" class="muted">放行后事实有变化，需重新审签</div>
+          <el-button
+            v-if="!departGate.departable"
+            size="small"
+            type="primary"
+            style="margin-top: 6px"
+            @click="goReleasePage"
+          >
+            去「出厂放行审签」处理
+          </el-button>
+        </el-alert>
 
         <div class="inline-form" style="margin-top: 10px">
           <el-button v-if="active.status !== 'DISABLED'" type="danger" plain @click="doStatus('DISABLED')">
@@ -170,10 +194,12 @@
 
 <script setup>
 import { computed, inject, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { aircraftApi, bayApi, cardApi } from '../api'
+import { aircraftApi, bayApi, cardApi, releaseApi } from '../api'
 
 const mro = inject('mro')
+const router = useRouter()
 const aircraftList = mro.aircraftList
 const currentId = mro.aircraftId
 
@@ -186,6 +212,7 @@ const bayVisible = ref(false)
 const createVisible = ref(false)
 const active = ref(null)
 const occupyAircraftId = ref(null)
+const departGate = ref(null)
 const form = ref({ bayNo: '', sizeClass: 'B', lengthM: 44 })
 
 const current = computed(() => aircraftList.value.find((a) => a.id === currentId.value) || null)
@@ -227,10 +254,25 @@ function strokeOf(bay) {
   return '#cfd8dc'
 }
 
-function openBay(bay) {
+async function openBay(bay) {
   active.value = bay
   occupyAircraftId.value = currentId.value
+  departGate.value = null
   bayVisible.value = true
+  // 占用机位：向服务端取出位核验（阻断原因来自服务端，前端不自行判断）
+  if (bay.status === 'OCCUPIED' && bay.currentAircraftId) {
+    departGate.value = await releaseApi.departureCheck(bay.currentAircraftId)
+  }
+}
+
+function goReleasePage() {
+  bayVisible.value = false
+  // 把顶栏机号切到该机，再去放行模块
+  if (active.value && active.value.currentAircraftId && currentId.value !== active.value.currentAircraftId) {
+    currentId.value = active.value.currentAircraftId
+    localStorage.setItem('mro-tail-id', String(active.value.currentAircraftId))
+  }
+  router.push('/release')
 }
 
 function openCreate() {
@@ -260,10 +302,11 @@ async function doOccupy() {
 }
 
 async function doRelease() {
+  // 服务端在锁内最终复核：无有效放行 / 已失效 / 事实漂移都会给出一致阻断提示
   await bayApi.release(active.value.id)
-  ElMessage.success('飞机已出位')
+  ElMessage.success('放行核验通过，飞机已出位')
   bayVisible.value = false
-  await Promise.all([load(), mro.reloadAircraft(), loadTimeline()])
+  await Promise.all([load(), mro.reloadAircraft(), loadTimeline(), mro.refreshOverview()])
 }
 
 async function doStatus(status) {
@@ -287,3 +330,9 @@ onMounted(async () => {
   await loadTimeline()
 })
 </script>
+
+<style scoped>
+.depart-gate {
+  margin-top: 10px;
+}
+</style>

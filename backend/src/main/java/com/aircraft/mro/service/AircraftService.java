@@ -19,6 +19,7 @@ import com.aircraft.mro.dto.AircraftDtos;
 import com.aircraft.mro.dto.Views;
 import com.aircraft.mro.repository.AircraftRepository;
 import com.aircraft.mro.repository.BayRepository;
+import com.aircraft.mro.repository.ReleaseLockRepository;
 import com.aircraft.mro.repository.WorkCardSummaryRepository;
 
 /**
@@ -34,13 +35,19 @@ public class AircraftService {
     private final AircraftRepository aircraftRepository;
     private final WorkCardSummaryRepository summaryRepository;
     private final BayRepository bayRepository;
+    private final ReleaseService releaseService;
+    private final ReleaseLockRepository releaseLockRepository;
 
     public AircraftService(AircraftRepository aircraftRepository,
                            WorkCardSummaryRepository summaryRepository,
-                           BayRepository bayRepository) {
+                           BayRepository bayRepository,
+                           ReleaseService releaseService,
+                           ReleaseLockRepository releaseLockRepository) {
         this.aircraftRepository = aircraftRepository;
         this.summaryRepository = summaryRepository;
         this.bayRepository = bayRepository;
+        this.releaseService = releaseService;
+        this.releaseLockRepository = releaseLockRepository;
     }
 
     @Transactional(readOnly = true)
@@ -152,9 +159,18 @@ public class AircraftService {
             throw new BizException("飞机 " + aircraft.getTailNo() + " 已经是"
                     + MroDict.airworthyName(target) + "状态，无需重复设置");
         }
+        // 适航状态是放行事实的核心：先锁飞机（与签字/终审/出位同序，杜绝死锁），再改状态并联动失效
+        if (releaseLockRepository.lockAircraft(id).isEmpty()) {
+            releaseLockRepository.save(new com.aircraft.mro.domain.ReleaseLock(id));
+            releaseLockRepository.lockAircraft(id);
+        }
+        String oldStatus = aircraft.getAirworthy();
         aircraft.setAirworthy(target);
         aircraft.setUpdatedAt(LocalDateTime.now());
-        return toView(aircraftRepository.save(aircraft));
+        Aircraft saved = aircraftRepository.save(aircraft);
+        releaseService.afterFactsChanged(id, "适航状态由「"
+                + MroDict.airworthyName(oldStatus) + "」变为「" + MroDict.airworthyName(target) + "」");
+        return toView(saved);
     }
 
     /** 登记一次飞行：累加飞行小时与起落次数 */

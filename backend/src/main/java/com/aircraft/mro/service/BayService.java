@@ -17,6 +17,7 @@ import com.aircraft.mro.dto.BayDtos;
 import com.aircraft.mro.dto.Views;
 import com.aircraft.mro.repository.AircraftRepository;
 import com.aircraft.mro.repository.BayRepository;
+import com.aircraft.mro.repository.ReleaseLockRepository;
 
 /**
  * 模块一：机库机位。
@@ -36,10 +37,15 @@ public class BayService {
 
     private final BayRepository bayRepository;
     private final AircraftRepository aircraftRepository;
+    private final ReleaseService releaseService;
+    private final ReleaseLockRepository releaseLockRepository;
 
-    public BayService(BayRepository bayRepository, AircraftRepository aircraftRepository) {
+    public BayService(BayRepository bayRepository, AircraftRepository aircraftRepository,
+                      ReleaseService releaseService, ReleaseLockRepository releaseLockRepository) {
         this.bayRepository = bayRepository;
         this.aircraftRepository = aircraftRepository;
+        this.releaseService = releaseService;
+        this.releaseLockRepository = releaseLockRepository;
     }
 
     @Transactional(readOnly = true)
@@ -104,6 +110,8 @@ public class BayService {
         if (aircraftId == null) {
             throw new BizException("请先选择要入位的飞机");
         }
+        // 机位占用是放行事实的一部分：先锁该机，与签字/终审/出位串行
+        lockAircraft(aircraftId);
         Aircraft aircraft = aircraftRepository.findById(aircraftId)
                 .orElseThrow(() -> new BizException("飞机不存在：id=" + aircraftId));
         List<Bay> occupied = bayRepository.findAllByCurrentAircraftId(aircraftId);
@@ -119,15 +127,21 @@ public class BayService {
         bay.setCurrentAircraftId(aircraft.getId());
         bay.setUpdatedAt(LocalDateTime.now());
         // 连带规则：适航机进机库定检，自动转为"定检中"
+        boolean airworthyChanged = false;
         if ("AIRWORTHY".equals(aircraft.getAirworthy())) {
             aircraft.setAirworthy("INSPECTION");
             aircraft.setUpdatedAt(LocalDateTime.now());
             aircraftRepository.save(aircraft);
+            airworthyChanged = true;
         }
-        return toView(bayRepository.save(bay));
+        Views.BayView view = toView(bayRepository.save(bay));
+        // 入位即占用变化（且可能连带适航变化）：在审单失效、已放行单标记漂移
+        releaseService.afterFactsChanged(aircraftId,
+                "飞机入位机位 " + bay.getBayNo() + (airworthyChanged ? "，适航状态由适航转为定检中" : ""));
+        return view;
     }
 
-    /** 飞机出位（出厂） */
+    /** 飞机出位（出厂）：必须持有有效的出厂放行审签，且放行对应当前这一轮维修事实 */
     @Transactional
     public Views.BayView release(Long bayId) {
         Bay bay = bayRepository.findById(bayId)
@@ -135,10 +149,13 @@ public class BayService {
         if (!"OCCUPIED".equals(bay.getStatus()) || bay.getCurrentAircraftId() == null) {
             throw new BizException("机位 " + bay.getBayNo() + " 本来就是空的，无需出位");
         }
-        Aircraft aircraft = aircraftRepository.findById(bay.getCurrentAircraftId()).orElse(null);
-        if (aircraft != null && MroDict.AIRWORTHY_GROUNDED.equals(aircraft.getAirworthy())) {
-            throw new BizException("飞机 " + aircraft.getTailNo() + " 处于停场待修，排故未闭环不得出厂");
-        }
+        Long aircraftId = bay.getCurrentAircraftId();
+        // 先锁飞机：与终审/上游变更串行，杜绝"边终审边出位/重复放行出位"
+        lockAircraft(aircraftId);
+        // 强制走放行闸门：无有效已放行记录 / 已失效 / 事实漂移一律在此给出一致阻断提示
+        releaseService.gateDeparture(aircraftId);
+        Aircraft aircraft = aircraftRepository.findById(aircraftId).orElse(null);
+        String bayNo = bay.getBayNo();
         bay.setStatus("IDLE");
         bay.setCurrentAircraftId(null);
         bay.setUpdatedAt(LocalDateTime.now());
@@ -147,7 +164,11 @@ public class BayService {
             aircraft.setUpdatedAt(LocalDateTime.now());
             aircraftRepository.save(aircraft);
         }
-        return toView(bayRepository.save(bay));
+        Views.BayView view = toView(bayRepository.save(bay));
+        // 出位核销放行额度（审计留痕）；占用变化本身也让其它在途单失效
+        releaseService.markDeparted(aircraftId, null, bayNo);
+        releaseService.afterFactsChanged(aircraftId, "飞机已从机位 " + bayNo + " 出位（机位释放）");
+        return view;
     }
 
     /** 机位状态：启用 / 停用 */
@@ -168,6 +189,14 @@ public class BayService {
         bay.setStatus(status);
         bay.setUpdatedAt(LocalDateTime.now());
         return toView(bayRepository.save(bay));
+    }
+
+    /** 获取该机的放行互斥锁（行不存在则懒插），与 ReleaseService 用的是同一把锁 */
+    private void lockAircraft(Long aircraftId) {
+        if (releaseLockRepository.lockAircraft(aircraftId).isEmpty()) {
+            releaseLockRepository.save(new com.aircraft.mro.domain.ReleaseLock(aircraftId));
+            releaseLockRepository.lockAircraft(aircraftId);
+        }
     }
 
     private BigDecimal defaultLength(String sizeClass) {

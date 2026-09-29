@@ -77,3 +77,24 @@ export const partApi = {
 export const hangarApi = {
   overview: () => http.get('/hangar/overview')
 }
+
+/** 模块六：出厂放行审签 */
+export const releaseApi = {
+  /** 顶部/总览计数：待审、已失效、已放行（可带 aircraftId） */
+  overview: (aircraftId) => http.get('/releases/overview', { params: aircraftId ? { aircraftId } : {} }),
+  /** 当前飞机的发起门禁（服务端算好的阻断项） */
+  gate: (aircraftId) => http.get('/releases/gate', { params: { aircraftId } }),
+  /** 出位核验：是否可出位 + 一致阻断文案 */
+  departureCheck: (aircraftId) => http.get('/releases/departure-check', { params: { aircraftId } }),
+  list: (aircraftId) => http.get('/releases', { params: aircraftId ? { aircraftId } : {} }),
+  detail: (id) => http.get(`/releases/${id}`),
+  diff: (id, roundNo) => http.get(`/releases/${id}/diff`, { params: roundNo ? { roundNo } : {} }),
+  create: (data) => http.post('/releases', data),
+  submit: (id, data) => http.post(`/releases/${id}/submit`, data),
+  mechSign: (id, signer) => http.post(`/releases/${id}/mech-sign`, { signer }),
+  qaApprove: (id, data) => http.post(`/releases/${id}/qa-approve`, data),
+  reject: (id, data) => http.post(`/releases/${id}/reject`, data),
+  /** 两人同时终审验收演示：sameActor=true 幂等，false 只成一个 */
+  concurrentQa: (id, sameActor, data) =>
+    http.post(`/releases/${id}/concurrent-qa?sameActor=${sameActor ? 'true' : 'false'}`, data || {})
+}

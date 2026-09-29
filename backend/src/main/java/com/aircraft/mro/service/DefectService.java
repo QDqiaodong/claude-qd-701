@@ -19,6 +19,7 @@ import com.aircraft.mro.dto.DefectDtos;
 import com.aircraft.mro.dto.Views;
 import com.aircraft.mro.repository.AircraftRepository;
 import com.aircraft.mro.repository.DefectRepository;
+import com.aircraft.mro.repository.ReleaseLockRepository;
 
 /**
  * 模块四：故障保留。
@@ -36,10 +37,24 @@ public class DefectService {
 
     private final DefectRepository defectRepository;
     private final AircraftRepository aircraftRepository;
+    private final ReleaseService releaseService;
+    private final ReleaseLockRepository releaseLockRepository;
 
-    public DefectService(DefectRepository defectRepository, AircraftRepository aircraftRepository) {
+    public DefectService(DefectRepository defectRepository, AircraftRepository aircraftRepository,
+                         ReleaseService releaseService, ReleaseLockRepository releaseLockRepository) {
         this.defectRepository = defectRepository;
         this.aircraftRepository = aircraftRepository;
+        this.releaseService = releaseService;
+        this.releaseLockRepository = releaseLockRepository;
+    }
+
+    /** 故障变化联动：先锁该机，再让在审放行单失效、已放行单标记漂移 */
+    private void lockAndInvalidate(Long aircraftId, String detail) {
+        if (releaseLockRepository.lockAircraft(aircraftId).isEmpty()) {
+            releaseLockRepository.save(new com.aircraft.mro.domain.ReleaseLock(aircraftId));
+            releaseLockRepository.lockAircraft(aircraftId);
+        }
+        releaseService.afterFactsChanged(aircraftId, detail);
     }
 
     @Transactional
@@ -48,13 +63,29 @@ public class DefectService {
                 ? defectRepository.findAllByOrderByDefectNoAsc()
                 : defectRepository.findAllByAircraftIdOrderByDefectNoAsc(aircraftId);
         LocalDate today = LocalDate.now();
-        // 超期自动置位：开放中且到期日已过的，落库成 OVERDUE，页面整行标红
+        // 先找出开放中已到期的故障涉及的飞机，按 id 升序一次性拿锁（与签字/终审/出位同序，避免交叉死锁）
+        java.util.Set<Long> overdueAircraft = new java.util.TreeSet<>();
+        for (Defect defect : defects) {
+            if ("OPEN".equals(defect.getStatus()) && defect.getDueDate().isBefore(today)) {
+                overdueAircraft.add(defect.getAircraftId());
+            }
+        }
+        for (Long acId : overdueAircraft) {
+            if (releaseLockRepository.lockAircraft(acId).isEmpty()) {
+                releaseLockRepository.save(new com.aircraft.mro.domain.ReleaseLock(acId));
+                releaseLockRepository.lockAircraft(acId);
+            }
+        }
+        // 锁后再把到期故障落库为 OVERDUE（页面整行标红），并让该机在审放行单失效
         for (Defect defect : defects) {
             if ("OPEN".equals(defect.getStatus()) && defect.getDueDate().isBefore(today)) {
                 defect.setStatus("OVERDUE");
                 defect.setUpdatedAt(LocalDateTime.now());
                 defectRepository.save(defect);
             }
+        }
+        for (Long acId : overdueAircraft) {
+            releaseService.afterFactsChanged(acId, "有开放故障到达保留期限自动转为超期");
         }
         Map<Long, String> tailMap = new HashMap<>();
         for (Aircraft aircraft : aircraftRepository.findAllByOrderByTailNoAsc()) {
@@ -119,7 +150,11 @@ public class DefectService {
         defect.setStatus(dueDate.isBefore(LocalDate.now()) ? "OVERDUE" : "OPEN");
         defect.setReporter(req.getReporter() == null || req.getReporter().isBlank() ? null : req.getReporter().trim());
         defect.setUpdatedAt(LocalDateTime.now());
-        return toView(defectRepository.save(defect), tailNoMap(aircraft), LocalDate.now());
+        // 先锁该机（与签字/终审/出位同序），让在审单失效、已放行单漂移，再落新故障
+        lockAndInvalidate(aircraft.getId(), "新增故障 " + defectNo + "（"
+                + ("OVERDUE".equals(defect.getStatus()) ? "已超期" : "开放") + "）");
+        Defect saved = defectRepository.save(defect);
+        return toView(saved, tailNoMap(aircraft), LocalDate.now());
     }
 
     /** 关闭缺陷：已关闭的不能再关 */
@@ -132,7 +167,10 @@ public class DefectService {
         }
         defect.setStatus("CLOSED");
         defect.setUpdatedAt(LocalDateTime.now());
-        return toView(defectRepository.save(defect), tailNoMap(null), LocalDate.now());
+        // 先锁飞机、失效在审单，再落关闭
+        lockAndInvalidate(defect.getAircraftId(), "故障 " + defect.getDefectNo() + " 已关闭");
+        Defect saved = defectRepository.save(defect);
+        return toView(saved, tailNoMap(null), LocalDate.now());
     }
 
     private Views.DefectView toView(Defect defect, Map<Long, String> tailMap, LocalDate today) {

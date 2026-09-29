@@ -23,6 +23,12 @@
 --   [R5.2] 库存不足禁借出      → PN-7310-002 库存 1
 --   [R5.3] 未归还不可重复还    → TL-2026-0003 已归还
 --   [R5.4] 归还数量不可大于借出 → service 校验
+--   [R6]   出厂放行审签（模块六）：
+--          B-9001 已放行待出位（正常三人审签，已可出位）
+--          B-9002 待质量终审（开放故障逐条保留依据 + 终审确认）
+--          B-9004 审签中工卡变化 → 已失效（旧签字保留作审计）
+--          B-9005 非适航 + 未闭环工卡（发起即被阻断）
+--          B-9003 干净无单（供现场走完整三人审签 + 两人同时终审）
 -- ============================================================================
 
 SET NAMES utf8mb4;
@@ -31,6 +37,12 @@ SET FOREIGN_KEY_CHECKS = 0;
 CREATE DATABASE IF NOT EXISTS aircraft_mro DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE aircraft_mro;
 
+DROP TABLE IF EXISTS release_event;
+DROP TABLE IF EXISTS release_snapshot_defect;
+DROP TABLE IF EXISTS release_snapshot_card;
+DROP TABLE IF EXISTS release_snapshot;
+DROP TABLE IF EXISTS release_order;
+DROP TABLE IF EXISTS release_lock;
 DROP TABLE IF EXISTS tool_loan;
 DROP TABLE IF EXISTS part;
 DROP TABLE IF EXISTS defect;
@@ -68,7 +80,13 @@ INSERT INTO bay (id, bay_no, size_class, fit_type, length_m, status, current_air
     (9,  'BAY-C02', 'C', 'ARJ21',                34.0, 'IDLE',     NULL, DATE_SUB(NOW(), INTERVAL 7 DAY)),
     (10, 'BAY-C03', 'C', 'ARJ21',                32.0, 'IDLE',     NULL, DATE_SUB(NOW(), INTERVAL 8 DAY)),
     (11, 'BAY-C04', 'C', 'ARJ21',                32.0, 'IDLE',     NULL, DATE_SUB(NOW(), INTERVAL 10 DAY)),
-    (12, 'BAY-A05', 'A', 'B737;A320;A330;ARJ21', 60.0, 'DISABLED', NULL, DATE_SUB(NOW(), INTERVAL 40 DAY));
+    (12, 'BAY-A05', 'A', 'B737;A320;A330;ARJ21', 60.0, 'DISABLED', NULL, DATE_SUB(NOW(), INTERVAL 40 DAY)),
+    -- [R6] 放行模块专用演示机位，均已被 B-900x 占用
+    (13, 'BAY-D01', 'A', 'B737;A320;A330;ARJ21', 62.0, 'OCCUPIED', 13, DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (14, 'BAY-D02', 'A', 'B737;A320;A330;ARJ21', 62.0, 'OCCUPIED', 14, DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (15, 'BAY-D03', 'A', 'B737;A320;A330;ARJ21', 62.0, 'OCCUPIED', 15, DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (16, 'BAY-D04', 'A', 'B737;A320;A330;ARJ21', 62.0, 'OCCUPIED', 16, DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (17, 'BAY-D05', 'A', 'B737;A320;A330;ARJ21', 62.0, 'OCCUPIED', 17, DATE_SUB(NOW(), INTERVAL 1 DAY));
 
 -- ----------------------------------------------------------------------------
 -- 模块二：飞机台账
@@ -102,7 +120,13 @@ INSERT INTO aircraft (id, tail_no, model, airline, total_fh, total_cycles, airwo
     (9,  'B-5206', 'B737',  '华夏长风航空', 27655.70, 19940, 'GROUNDED',   '前起落架渗漏待件',    DATE_SUB(NOW(), INTERVAL 7 DAY)),
     (10, 'B-5590', 'A320',  '东方云途航空', 22018.40, 16230, 'AIRWORTHY',  '正常航班运营',        DATE_SUB(NOW(), INTERVAL 8 DAY)),
     (11, 'B-3305', 'ARJ21', '北疆支线航空',  7342.90,  8910, 'AIRWORTHY',  '高原航线改装完毕',    DATE_SUB(NOW(), INTERVAL 9 DAY)),
-    (12, 'B-8062', 'B737',  '南岭快线航空', 33490.20, 24110, 'INSPECTION', '例行周检',           DATE_SUB(NOW(), INTERVAL 10 DAY));
+    (12, 'B-8062', 'B737',  '南岭快线航空', 33490.20, 24110, 'INSPECTION', '例行周检',           DATE_SUB(NOW(), INTERVAL 10 DAY)),
+    -- [R6] 放行模块演示飞机：9001 已放行 / 9002 待终审（带开放故障） / 9003 干净无单 / 9004 已失效 / 9005 被阻断
+    (13, 'B-9001', 'B737',  '华夏长风航空', 26510.00, 19002, 'AIRWORTHY',  'A 检完工，放行已终审',  DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (14, 'B-9002', 'A320',  '东方云途航空', 18322.40, 13210, 'AIRWORTHY',  '定检完工，1 项 MEL 保留', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (15, 'B-9003', 'A320',  '南岭快线航空', 16050.00, 11520, 'AIRWORTHY',  'C 检完工，无保留',      DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (16, 'B-9004', 'B737',  '华夏长风航空', 28890.10, 20230, 'AIRWORTHY',  '放行后新增工卡（失效演示）', DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (17, 'B-9005', 'A330',  '北疆支线航空', 50120.70, 10640, 'GROUNDED',   '液压故障未排完（阻断演示）', DATE_SUB(NOW(), INTERVAL 1 DAY));
 
 -- ----------------------------------------------------------------------------
 -- 模块三：定检工卡
@@ -143,7 +167,15 @@ INSERT INTO work_card (id, card_no, aircraft_id, check_type, title, planned_hour
     (12, 'WC-2026-0012', 8, 'C_CHECK',  '客舱整新内饰拆装',      36.00, 0.00, DATE_SUB(NOW(), INTERVAL 4 DAY), NULL, 'IN_PROGRESS', '孙立伟', NULL,     DATE_SUB(NOW(), INTERVAL 4 DAY)),
     (13, 'WC-2026-0013', 8, 'SPECIAL',  '翼尖小翼裂纹修理',      16.00, 17.50, DATE_SUB(NOW(), INTERVAL 12 DAY), DATE_SUB(NOW(), INTERVAL 10 DAY), 'CLOSED',    '刘振华', '周国平', DATE_SUB(NOW(), INTERVAL 10 DAY)),
     (14, 'WC-2026-0014', 9, 'SPECIAL',  '前起落架渗漏排故',      10.00, 0.00, DATE_SUB(NOW(), INTERVAL 6 DAY), NULL, 'WAIT_INSP',   '王大鹏', NULL,     DATE_SUB(NOW(), INTERVAL 6 DAY)),
-    (15, 'WC-2026-0015', 12,'ROUTINE',  '周检：操纵面行程校装',  4.50,  0.00, NULL, NULL, 'ASSIGNED',    NULL,     NULL,     DATE_SUB(NOW(), INTERVAL 1 DAY));
+    (15, 'WC-2026-0015', 12,'ROUTINE',  '周检：操纵面行程校装',  4.50,  0.00, NULL, NULL, 'ASSIGNED',    NULL,     NULL,     DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    -- [R6] 放行模块演示工卡：9001/9002/9003 全部已闭环；9004 快照后新开了 0021（导致已失效）；9005 有进行中工卡（阻断）
+    (16, 'WC-2026-0016', 13, 'A_CHECK',  'A 检全机系统功能测试',  10.00, 10.20, DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY), 'CLOSED',    '陈志强', '罗建军', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (17, 'WC-2026-0017', 13, 'ROUTINE',  '起落架安全销在位检查',  1.00,  1.00, DATE_SUB(NOW(), INTERVAL 2 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY), 'CLOSED',    '王大鹏', '罗建军', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (18, 'WC-2026-0018', 14, 'A_CHECK',  '液压油滤更换与系统排气', 6.00,  6.10, DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY), 'CLOSED',    '孙立伟', '周国平', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (19, 'WC-2026-0019', 15, 'C_CHECK',  'C 检收尾：铭牌与标牌核对', 2.00, 2.00, DATE_SUB(NOW(), INTERVAL 4 DAY), DATE_SUB(NOW(), INTERVAL 2 DAY), 'CLOSED',    '刘振华', '周国平', DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (20, 'WC-2026-0020', 16, 'A_CHECK',  'A 检发动机孔探检查',    8.00,  8.30, DATE_SUB(NOW(), INTERVAL 4 DAY), DATE_SUB(NOW(), INTERVAL 2 DAY), 'CLOSED',    '陈志强', '罗建军', DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (21, 'WC-2026-0021', 16, 'SPECIAL',  '放行后追加：卫星通信天线复检', 3.00, 0.00, DATE_SUB(NOW(), INTERVAL 1 DAY), NULL, 'IN_PROGRESS', '钱明亮', NULL, DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (22, 'WC-2026-0022', 17, 'SPECIAL',  '中央液压泵更换后排故',  12.00, 0.00, DATE_SUB(NOW(), INTERVAL 1 DAY), NULL, 'IN_PROGRESS', '孙立伟', NULL, DATE_SUB(NOW(), INTERVAL 1 DAY));
 
 -- ----------------------------------------------------------------------------
 -- 模块四：故障保留
@@ -181,7 +213,9 @@ INSERT INTO defect (id, defect_no, aircraft_id, ata_chapter, description, limit_
     (10, 'DF-2026-0010', 7,  '27-51', '2 号扰流板作动筒渗漏',          'HOUR', 48, DATE_SUB(CURDATE(), INTERVAL 5 DAY),  DATE_ADD(CURDATE(), INTERVAL 3 DAY),  'OPEN',    '机务陈志强', DATE_SUB(NOW(), INTERVAL 5 DAY)),
     (11, 'DF-2026-0011', 8,  '53-11', '机身蒙皮一处凹坑待测厚',         'DAY',  10, DATE_SUB(CURDATE(), INTERVAL 6 DAY),  DATE_ADD(CURDATE(), INTERVAL 4 DAY),  'OPEN',    '机务刘振华', DATE_SUB(NOW(), INTERVAL 6 DAY)),
     (12, 'DF-2026-0012', 9,  '32-31', '前起落架减震支柱渗漏',           'DAY',  3,  DATE_SUB(CURDATE(), INTERVAL 6 DAY),  DATE_SUB(CURDATE(), INTERVAL 3 DAY),  'OVERDUE', '机务王大鹏', DATE_SUB(NOW(), INTERVAL 3 DAY)),
-    (13, 'DF-2026-0013', 12, '31-41', '风挡雨刷低速档失效',            'DAY',  10, DATE_SUB(CURDATE(), INTERVAL 1 DAY),  DATE_ADD(CURDATE(), INTERVAL 9 DAY),  'OPEN',    '机长李航',   DATE_SUB(NOW(), INTERVAL 1 DAY));
+    (13, 'DF-2026-0013', 12, '31-41', '风挡雨刷低速档失效',            'DAY',  10, DATE_SUB(CURDATE(), INTERVAL 1 DAY),  DATE_ADD(CURDATE(), INTERVAL 9 DAY),  'OPEN',    '机长李航',   DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    -- [R6] B-9002 一条未超期开放故障（允许带保留依据放行，由质量终审逐条确认）
+    (14, 'DF-2026-0014', 14, '22-30', '自动驾驶仪 2 通道偶发脱开（按 MEL 22-10-3 保留）', 'DAY', 7, DATE_SUB(CURDATE(), INTERVAL 2 DAY), DATE_ADD(CURDATE(), INTERVAL 5 DAY), 'OPEN', '机械员孙立伟', DATE_SUB(NOW(), INTERVAL 2 DAY));
 
 -- ----------------------------------------------------------------------------
 -- 模块五：航材
@@ -252,5 +286,165 @@ INSERT INTO tool_loan (id, loan_no, part_id, borrower, purpose, quantity, loan_t
     (10, 'TL-2026-0010', 11, '赵岩',   'WC-2026-0009 复查',  1, DATE_SUB(NOW(), INTERVAL 4 DAY), NULL, '库管郑义'),
     (11, 'TL-2026-0011', 13, '何蕊',   '客舱整新',          10, DATE_SUB(NOW(), INTERVAL 9 DAY), DATE_SUB(NOW(), INTERVAL 9 DAY), '库管吴敏'),
     (12, 'TL-2026-0012', 3,  '周国平', '翼尖修理随工拆装', 1, DATE_SUB(NOW(), INTERVAL 12 DAY), DATE_SUB(NOW(), INTERVAL 10 DAY), '库管郑义');
+
+-- ----------------------------------------------------------------------------
+-- 模块六：出厂放行审签
+-- ----------------------------------------------------------------------------
+
+-- 每架飞机一行的互斥锁：所有会改变"放行事实"或审签状态的事务，
+-- 先 SELECT ... FOR UPDATE 锁住本行，把上游变更 / 出位 / 签字强制串行化，杜绝死锁与双花。
+CREATE TABLE release_lock (
+    aircraft_id BIGINT NOT NULL COMMENT '飞机 id（= 锁对象）',
+    PRIMARY KEY (aircraft_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '放行审签飞机级互斥锁';
+
+-- 五架放行演示机各预插一行锁
+INSERT INTO release_lock (aircraft_id) VALUES (13), (14), (15), (16), (17);
+
+-- 放行单主表。
+-- status：DRAFT 草稿 / PENDING_MECH 待机械放行 / PENDING_QA 待质量终审 /
+--         RELEASED 已放行 / REJECTED 已驳回 / INVALID 已失效
+-- active_flag：在审/可修订的在途单据恒为 1；终态置 NULL。
+--   uk_active 保证同一架飞机【同时只有一条在途单据】（MySQL 唯一索引允许多个 NULL）。
+-- stale：已放行后上游事实漂移，单子本身仍 RELEASED 留痕，但已不能出位，须重新发起。
+CREATE TABLE release_order (
+    id               BIGINT      NOT NULL AUTO_INCREMENT,
+    release_no       VARCHAR(32) NOT NULL COMMENT '放行单号',
+    aircraft_id      BIGINT      NOT NULL COMMENT '飞机 id',
+    status           VARCHAR(16) NOT NULL COMMENT 'DRAFT / PENDING_MECH / PENDING_QA / RELEASED / REJECTED / INVALID',
+    initiator        VARCHAR(32) NOT NULL COMMENT '发起人',
+    mech_signer      VARCHAR(32) NULL COMMENT '机械放行人',
+    qa_signer        VARCHAR(32) NULL COMMENT '质量终审人',
+    reject_reason    VARCHAR(255) NULL COMMENT '最近一次驳回原因',
+    active_flag      TINYINT     NULL COMMENT '在途=1，终态=NULL，配合唯一索引限制同机仅一条在途',
+    stale            TINYINT     NOT NULL DEFAULT 0 COMMENT '已放行后事实是否已漂移：1 不能再出位',
+    departed         TINYINT     NOT NULL DEFAULT 0 COMMENT '放行额度是否已被出位核销：1 不可重复出位',
+    initiated_at     DATETIME    NOT NULL COMMENT '发起时间',
+    mech_signed_at   DATETIME    NULL COMMENT '机械放行签字时间',
+    qa_signed_at     DATETIME    NULL COMMENT '质量终审签字时间',
+    finished_at      DATETIME    NULL COMMENT '终态时间（放行/失效/驳回）',
+    created_at       DATETIME    NOT NULL,
+    updated_at       DATETIME    NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_release_no (release_no),
+    UNIQUE KEY uk_active (aircraft_id, active_flag),
+    KEY idx_release_aircraft (aircraft_id),
+    KEY idx_release_status (status)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '出厂放行审签单';
+
+-- 证据快照主表：每次提交（首次/被驳回后再次提交）INSERT 新一轮，绝不 UPDATE，历史不可被上游改写。
+CREATE TABLE release_snapshot (
+    id                    BIGINT      NOT NULL AUTO_INCREMENT,
+    release_id            BIGINT      NOT NULL COMMENT '放行单 id',
+    round_no              INT         NOT NULL COMMENT '快照轮次，从 1 递增',
+    tail_no               VARCHAR(16) NOT NULL COMMENT '机号（快照当时）',
+    model                 VARCHAR(16) NOT NULL COMMENT '机型',
+    airworthy             VARCHAR(16) NOT NULL COMMENT '适航状态码（快照当时）',
+    airworthy_name        VARCHAR(16) NOT NULL COMMENT '适航状态名',
+    bay_id                BIGINT      NULL COMMENT '所在机位 id（快照当时）',
+    bay_no                VARCHAR(16) NULL COMMENT '所在机位编号',
+    bay_status            VARCHAR(16) NULL COMMENT '机位状态（快照当时）',
+    open_card_count       INT         NOT NULL DEFAULT 0 COMMENT '未闭环工卡条数',
+    open_defect_count     INT         NOT NULL DEFAULT 0 COMMENT '开放故障条数（未超期）',
+    overdue_defect_count  INT         NOT NULL DEFAULT 0 COMMENT '超期故障条数',
+    taken_at              DATETIME    NOT NULL COMMENT '快照取证时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_snapshot_round (release_id, round_no),
+    KEY idx_snapshot_release (release_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '放行证据快照';
+
+-- 快照中的未闭环工卡（编号/状态/更新时间逐列留痕）
+CREATE TABLE release_snapshot_card (
+    id               BIGINT      NOT NULL AUTO_INCREMENT,
+    snapshot_id      BIGINT      NOT NULL,
+    card_id          BIGINT      NOT NULL,
+    card_no          VARCHAR(32) NOT NULL COMMENT '工卡号',
+    title            VARCHAR(128) NOT NULL,
+    status           VARCHAR(16) NOT NULL COMMENT '快照当时工卡状态',
+    status_name      VARCHAR(16) NOT NULL,
+    executor         VARCHAR(32) NULL,
+    inspector        VARCHAR(32) NULL,
+    card_updated_at  DATETIME    NULL COMMENT '工卡当时的更新时间',
+    PRIMARY KEY (id),
+    KEY idx_snap_card_snapshot (snapshot_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '快照·未闭环工卡';
+
+-- 快照中的开放/超期故障；保留依据由发起人逐条填写，终审逐条确认
+CREATE TABLE release_snapshot_defect (
+    id                BIGINT      NOT NULL AUTO_INCREMENT,
+    snapshot_id       BIGINT      NOT NULL,
+    defect_id         BIGINT      NOT NULL,
+    defect_no         VARCHAR(32) NOT NULL COMMENT '缺陷单号',
+    ata_chapter       VARCHAR(16) NOT NULL,
+    description       VARCHAR(255) NOT NULL,
+    status            VARCHAR(16) NOT NULL COMMENT '快照当时故障状态：OPEN / OVERDUE',
+    status_name       VARCHAR(16) NOT NULL,
+    due_date          DATE        NOT NULL COMMENT '保留到期日',
+    retain_basis      VARCHAR(255) NOT NULL COMMENT '保留依据（MEL 条款/工程批准等），逐条必填',
+    qa_confirmed      TINYINT     NOT NULL DEFAULT 0 COMMENT '质量终审是否逐条确认',
+    defect_updated_at DATETIME    NULL COMMENT '故障当时的更新时间',
+    PRIMARY KEY (id),
+    KEY idx_snap_defect_snapshot (snapshot_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '快照·开放/超期故障与保留依据';
+
+-- 完整审计时间线：发起 / 提交 / 机械放行 / 终审通过 / 驳回 / 上游失效 / 事实漂移 / 出位核销，只追加不改写
+CREATE TABLE release_event (
+    id          BIGINT      NOT NULL AUTO_INCREMENT,
+    release_id  BIGINT      NOT NULL,
+    event_type  VARCHAR(24) NOT NULL COMMENT 'CREATED/SUBMITTED/MECH_SIGNED/QA_APPROVED/REJECTED/INVALIDATED/FACT_DRIFTED/DEPARTED',
+    actor       VARCHAR(32) NULL COMMENT '操作人（系统自动失效时为 SYSTEM）',
+    detail      VARCHAR(512) NULL COMMENT '说明（驳回原因/失效原因/对端冲突结果）',
+    event_at    DATETIME    NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_event_release (release_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '放行审签审计事件';
+
+-- [R6-1] B-9001：正常三人审签已完成（发起人陈志强 / 机械放行王大鹏 / 质量终审罗建军），当前允许出位
+INSERT INTO release_order (id, release_no, aircraft_id, status, initiator, mech_signer, qa_signer, reject_reason, active_flag, stale, departed, initiated_at, mech_signed_at, qa_signed_at, finished_at, created_at, updated_at) VALUES
+    (1, 'RO-2026-0001', 13, 'RELEASED', '陈志强', '王大鹏', '罗建军', NULL, NULL, 0, 0,
+     DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY),
+     DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+INSERT INTO release_snapshot (id, release_id, round_no, tail_no, model, airworthy, airworthy_name, bay_id, bay_no, bay_status, open_card_count, open_defect_count, overdue_defect_count, taken_at) VALUES
+    (1, 1, 1, 'B-9001', 'B737', 'AIRWORTHY', '适航', 13, 'BAY-D01', 'OCCUPIED', 0, 0, 0, DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+INSERT INTO release_event (id, release_id, event_type, actor, detail, event_at) VALUES
+    (1, 1, 'CREATED',     '陈志强', '发起出厂放行审签，生成第 1 轮证据快照', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (2, 1, 'SUBMITTED',   '陈志强', '提交审签：适航、机位在位、无未闭环工卡、无开放/超期故障', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (3, 1, 'MECH_SIGNED', '王大鹏', '机械放行通过，提交质量终审', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (4, 1, 'QA_APPROVED', '罗建军', '质量终审通过，准许出厂出位', DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+-- [R6-2] B-9002：待质量终审，1 条未超期开放故障，保留依据已逐条填写，等待终审确认
+INSERT INTO release_order (id, release_no, aircraft_id, status, initiator, mech_signer, qa_signer, reject_reason, active_flag, stale, departed, initiated_at, mech_signed_at, qa_signed_at, finished_at, created_at, updated_at) VALUES
+    (2, 'RO-2026-0002', 14, 'PENDING_QA', '孙立伟', '陈志强', NULL, NULL, 1, 0, 0,
+     DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY), NULL, NULL,
+     DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+INSERT INTO release_snapshot (id, release_id, round_no, tail_no, model, airworthy, airworthy_name, bay_id, bay_no, bay_status, open_card_count, open_defect_count, overdue_defect_count, taken_at) VALUES
+    (2, 2, 1, 'B-9002', 'A320', 'AIRWORTHY', '适航', 14, 'BAY-D02', 'OCCUPIED', 0, 1, 0, DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+INSERT INTO release_snapshot_defect (id, snapshot_id, defect_id, defect_no, ata_chapter, description, status, status_name, due_date, retain_basis, qa_confirmed, defect_updated_at) VALUES
+    (1, 2, 14, 'DF-2026-0014', '22-30', '自动驾驶仪 2 通道偶发脱开（按 MEL 22-10-3 保留）', 'OPEN', '开放', DATE_ADD(CURDATE(), INTERVAL 5 DAY),
+     '依据 MEL 22-10-3 保留：2 通道失效不影响单通道自动驾驶进近能力，已挂牌并安排 7 个飞行日内更换 FCC，签派已核对性能手册', 0, DATE_SUB(NOW(), INTERVAL 2 DAY));
+
+INSERT INTO release_event (id, release_id, event_type, actor, detail, event_at) VALUES
+    (5, 2, 'CREATED',     '孙立伟', '发起出厂放行审签，生成第 1 轮证据快照', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (6, 2, 'SUBMITTED',   '孙立伟', '提交审签：1 条开放故障 DF-2026-0014 未超期，已逐条填写保留依据', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (7, 2, 'MECH_SIGNED', '陈志强', '机械放行通过，开放故障保留依据随单提交质量终审', DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+-- [R6-3] B-9004：审签期间新增工卡 WC-2026-0021 → 待审记录立即失效，签字保留作审计、不得沿用
+INSERT INTO release_order (id, release_no, aircraft_id, status, initiator, mech_signer, qa_signer, reject_reason, active_flag, stale, departed, initiated_at, mech_signed_at, qa_signed_at, finished_at, created_at, updated_at) VALUES
+    (3, 'RO-2026-0003', 16, 'INVALID', '钱明亮', '王大鹏', NULL, NULL, NULL, 0, 0,
+     DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 2 DAY), NULL, DATE_SUB(NOW(), INTERVAL 1 DAY),
+     DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+INSERT INTO release_snapshot (id, release_id, round_no, tail_no, model, airworthy, airworthy_name, bay_id, bay_no, bay_status, open_card_count, open_defect_count, overdue_defect_count, taken_at) VALUES
+    (3, 3, 1, 'B-9004', 'B737', 'AIRWORTHY', '适航', 16, 'BAY-D04', 'OCCUPIED', 0, 0, 0, DATE_SUB(NOW(), INTERVAL 3 DAY));
+
+INSERT INTO release_event (id, release_id, event_type, actor, detail, event_at) VALUES
+    ( 8, 3, 'CREATED',     '钱明亮', '发起出厂放行审签，生成第 1 轮证据快照', DATE_SUB(NOW(), INTERVAL 3 DAY)),
+    ( 9, 3, 'SUBMITTED',   '钱明亮', '提交审签：适航、机位在位、工卡全闭环、无保留故障', DATE_SUB(NOW(), INTERVAL 3 DAY)),
+    (10, 3, 'MECH_SIGNED', '王大鹏', '机械放行通过，提交质量终审', DATE_SUB(NOW(), INTERVAL 2 DAY)),
+    (11, 3, 'INVALIDATED', 'SYSTEM', '审签期间关联事实发生变化：新增未闭环工卡 WC-2026-0021（卫星通信天线复检），证据快照已过期，已有签字保留作审计但不得沿用，须重新发起', DATE_SUB(NOW(), INTERVAL 1 DAY));
 
 SET FOREIGN_KEY_CHECKS = 1;

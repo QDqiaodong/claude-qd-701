@@ -102,6 +102,59 @@ public final class MroDict {
             "OUT", "在借未还",
             "BACK", "已归还");
 
+    // ---------------- 出厂放行审签 ----------------
+    private static final Map<String, String> RELEASE_STATUS = Map.of(
+            "DRAFT", "草稿",
+            "PENDING_MECH", "待机械放行",
+            "PENDING_QA", "待质量终审",
+            "RELEASED", "已放行",
+            "REJECTED", "已驳回",
+            "INVALID", "已失效");
+
+    /** 在途（未终结）状态：这些状态的单据占用同机唯一在途名额 */
+    public static final List<String> RELEASE_ACTIVE_STATUS =
+            List.of("DRAFT", "PENDING_MECH", "PENDING_QA", "REJECTED");
+
+    /** 在审（快照之后事实变化即失效）的状态 */
+    public static final List<String> RELEASE_PENDING_STATUS =
+            List.of("PENDING_MECH", "PENDING_QA");
+
+    /** 审计事件类型 → 中文短名（时间线直接展示） */
+    private static final Map<String, String> RELEASE_EVENT = Map.of(
+            "CREATED", "发起",
+            "SUBMITTED", "提交审签",
+            "MECH_SIGNED", "机械放行",
+            "QA_APPROVED", "质量终审通过",
+            "REJECTED", "驳回",
+            "INVALIDATED", "上游变更·已失效",
+            "FACT_DRIFTED", "放行后事实漂移",
+            "DEPARTED", "凭单出位");
+
+    /** 工卡是否算"未闭环"：已关闭 / 已取消之外都是未闭环 */
+    public static boolean isCardOpen(String status) {
+        return !"CLOSED".equals(status) && !"CANCELED".equals(status);
+    }
+
+    public static boolean isValidReleaseStatus(String status) {
+        return status != null && RELEASE_STATUS.containsKey(status);
+    }
+
+    public static String releaseStatusName(String status) {
+        return status == null ? "" : RELEASE_STATUS.getOrDefault(status, status);
+    }
+
+    public static boolean isReleaseActive(String status) {
+        return status != null && RELEASE_ACTIVE_STATUS.contains(status);
+    }
+
+    public static boolean isReleasePending(String status) {
+        return status != null && RELEASE_PENDING_STATUS.contains(status);
+    }
+
+    public static String releaseEventName(String type) {
+        return type == null ? "" : RELEASE_EVENT.getOrDefault(type, type);
+    }
+
     // ---------------- 取值方法 ----------------
 
     public static boolean isValidModel(String model) {

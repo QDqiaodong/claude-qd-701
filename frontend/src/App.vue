@@ -29,6 +29,15 @@
         <div class="stat-chip" :class="{ 'is-alert': (overview.defectOverdue || 0) > 0 }">
           <b>{{ overview.defectOverdue || 0 }}</b><span>超期保留</span>
         </div>
+        <div class="stat-chip" :class="{ 'is-alert': (releaseOverview.pendingCount || 0) > 0 }">
+          <b>{{ releaseOverview.pendingCount || 0 }}</b><span>待审放行</span>
+        </div>
+        <div class="stat-chip" :class="{ 'is-alert': (releaseOverview.invalidCount || 0) > 0 }">
+          <b>{{ releaseOverview.invalidCount || 0 }}</b><span>已失效放行</span>
+        </div>
+        <div class="stat-chip">
+          <b>{{ releaseOverview.releasedCount || 0 }}</b><span>已放行</span>
+        </div>
         <div class="stat-chip" :class="{ 'is-alert': (overview.partLow || 0) > 0 }">
           <b>{{ overview.partLow || 0 }}</b><span>低库存件</span>
         </div>
@@ -57,10 +66,10 @@
 </template>
 
 <script setup>
-import { computed, getCurrentInstance, onMounted, provide, ref } from 'vue'
+import { computed, getCurrentInstance, onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import router, { navItems } from './router'
-import { aircraftApi, hangarApi } from './api'
+import { aircraftApi, hangarApi, releaseApi } from './api'
 
 /**
  * 模板自带的 main.js 只装了 Element Plus，没装 router（那份文件不动它），
@@ -75,6 +84,7 @@ const nav = useRouter()
 const aircraftList = ref([])
 const aircraftId = ref(null)
 const overview = ref({})
+const releaseOverview = ref({})
 
 /**
  * 全局机号上下文：所有页面 inject('mro') 拿同一架飞机，
@@ -84,6 +94,7 @@ const mro = {
   aircraftId,
   aircraftList,
   overview,
+  releaseOverview,
   refreshOverview: loadOverview,
   reloadAircraft: loadAircraft
 }
@@ -117,8 +128,15 @@ async function loadAircraft() {
 }
 
 async function loadOverview() {
-  overview.value = await hangarApi.overview()
+  const [ov] = await Promise.all([hangarApi.overview(), loadReleaseOverview()])
+  overview.value = ov
 }
+
+async function loadReleaseOverview() {
+  releaseOverview.value = await releaseApi.overview(aircraftId.value || undefined)
+}
+
+watch(aircraftId, loadReleaseOverview)
 
 onMounted(async () => {
   await loadAircraft()

@@ -21,6 +21,7 @@ import com.aircraft.mro.domain.WorkCard;
 import com.aircraft.mro.dto.Views;
 import com.aircraft.mro.dto.WorkCardDtos;
 import com.aircraft.mro.repository.AircraftRepository;
+import com.aircraft.mro.repository.ReleaseLockRepository;
 import com.aircraft.mro.repository.WorkCardRepository;
 
 /**
@@ -46,10 +47,15 @@ public class WorkCardService {
 
     private final WorkCardRepository workCardRepository;
     private final AircraftRepository aircraftRepository;
+    private final ReleaseService releaseService;
+    private final ReleaseLockRepository releaseLockRepository;
 
-    public WorkCardService(WorkCardRepository workCardRepository, AircraftRepository aircraftRepository) {
+    public WorkCardService(WorkCardRepository workCardRepository, AircraftRepository aircraftRepository,
+                           ReleaseService releaseService, ReleaseLockRepository releaseLockRepository) {
         this.workCardRepository = workCardRepository;
         this.aircraftRepository = aircraftRepository;
+        this.releaseService = releaseService;
+        this.releaseLockRepository = releaseLockRepository;
     }
 
     @Transactional(readOnly = true)
@@ -154,7 +160,10 @@ public class WorkCardService {
         card.setExecutor(req.getExecutor() == null || req.getExecutor().isBlank() ? null : req.getExecutor().trim());
         card.setInspector(null);
         card.setUpdatedAt(LocalDateTime.now());
-        return toView(workCardRepository.save(card), tailMap());
+        // 先锁该机（与签字/终审/出位同序），让在审放行单失效、已放行单漂移，再落新卡
+        lockAndInvalidate(aircraftId, "新增工卡 " + cardNo + "（" + card.getTitle() + "）");
+        WorkCard saved = workCardRepository.save(card);
+        return toView(saved, tailMap());
     }
 
     /** 待派工 → 进行中 */
@@ -166,6 +175,7 @@ public class WorkCardService {
         if (executor.isEmpty()) {
             throw new BizException("开工前必须指定执行人");
         }
+        lockAndInvalidate(card.getAircraftId(), "工卡 " + card.getCardNo() + " 开工（执行人 " + executor + "）");
         card.setStatus("IN_PROGRESS");
         card.setExecutor(executor);
         card.setStartTime(LocalDateTime.now());
@@ -178,6 +188,7 @@ public class WorkCardService {
     public Views.WorkCardView finish(Long id, WorkCardDtos.FinishReq req) {
         WorkCard card = requireCard(id);
         requireFlow(card, "WAIT_INSP");
+        lockAndInvalidate(card.getAircraftId(), "工卡 " + card.getCardNo() + " 报完工待检验");
         BigDecimal actualHour = req == null || req.getActualHour() == null
                 ? hoursBetween(card.getStartTime(), LocalDateTime.now())
                 : req.getActualHour();
@@ -206,6 +217,7 @@ public class WorkCardService {
         if (inspector.equals(card.getExecutor())) {
             throw new BizException("执行人与检验员不能是同一人，检验员收到的是：" + inspector);
         }
+        lockAndInvalidate(card.getAircraftId(), "工卡 " + card.getCardNo() + " 检验关闭（" + card.getTitle() + "）");
         card.setStatus("CLOSED");
         card.setInspector(inspector);
         card.setUpdatedAt(LocalDateTime.now());
@@ -217,9 +229,22 @@ public class WorkCardService {
     public Views.WorkCardView cancel(Long id) {
         WorkCard card = requireCard(id);
         requireFlow(card, "CANCELED");
+        lockAndInvalidate(card.getAircraftId(), "工卡 " + card.getCardNo() + " 被取消");
         card.setStatus("CANCELED");
         card.setUpdatedAt(LocalDateTime.now());
         return toView(workCardRepository.save(card), tailMap());
+    }
+
+    /**
+     * 工卡是放行事实的一部分：任何工卡变更都先锁该机（与签字/终审/出位串行，杜绝死锁），
+     * 再让在审放行单失效、已放行单标记漂移。
+     */
+    private void lockAndInvalidate(Long aircraftId, String detail) {
+        if (releaseLockRepository.lockAircraft(aircraftId).isEmpty()) {
+            releaseLockRepository.save(new com.aircraft.mro.domain.ReleaseLock(aircraftId));
+            releaseLockRepository.lockAircraft(aircraftId);
+        }
+        releaseService.afterFactsChanged(aircraftId, detail);
     }
 
     private WorkCard requireCard(Long id) {
