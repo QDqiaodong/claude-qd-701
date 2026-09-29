@@ -34,13 +34,16 @@ public class AircraftService {
     private final AircraftRepository aircraftRepository;
     private final WorkCardSummaryRepository summaryRepository;
     private final BayRepository bayRepository;
+    private final ReleaseService releaseService;
 
     public AircraftService(AircraftRepository aircraftRepository,
                            WorkCardSummaryRepository summaryRepository,
-                           BayRepository bayRepository) {
+                           BayRepository bayRepository,
+                           ReleaseService releaseService) {
         this.aircraftRepository = aircraftRepository;
         this.summaryRepository = summaryRepository;
         this.bayRepository = bayRepository;
+        this.releaseService = releaseService;
     }
 
     @Transactional(readOnly = true)
@@ -152,9 +155,15 @@ public class AircraftService {
             throw new BizException("飞机 " + aircraft.getTailNo() + " 已经是"
                     + MroDict.airworthyName(target) + "状态，无需重复设置");
         }
+        String oldStatus = aircraft.getAirworthy();
         aircraft.setAirworthy(target);
         aircraft.setUpdatedAt(LocalDateTime.now());
-        return toView(aircraftRepository.save(aircraft));
+        aircraft = aircraftRepository.save(aircraft);
+        // 适航状态是放行证据快照的核心事实：待审放行立即失效，不能用旧快照放行
+        releaseService.invalidateOnFactChange(aircraft.getId(),
+                "飞机适航状态已由「" + MroDict.airworthyName(oldStatus)
+                        + "」变为「" + MroDict.airworthyName(target) + "」");
+        return toView(aircraft);
     }
 
     /** 登记一次飞行：累加飞行小时与起落次数 */

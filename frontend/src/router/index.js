@@ -39,6 +39,13 @@ export const navItems = [
     icon: '📦',
     label: '航材与借还',
     hint: '低库存预警·借出归还'
+  },
+  {
+    key: 'release',
+    path: '/release',
+    icon: '🛂',
+    label: '出厂放行审签',
+    hint: '证据快照·三人审签·终审放行后才可出位'
   }
 ]
 
@@ -49,6 +56,7 @@ const routes = [
   { path: '/cards', name: 'cards', component: () => import('../views/WorkCardView.vue') },
   { path: '/defects', name: 'defects', component: () => import('../views/DefectView.vue') },
   { path: '/parts', name: 'parts', component: () => import('../views/PartView.vue') },
+  { path: '/release', name: 'release', component: () => import('../views/ReleaseView.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/hangar' }
 ]
 

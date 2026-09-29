@@ -46,10 +46,13 @@ public class WorkCardService {
 
     private final WorkCardRepository workCardRepository;
     private final AircraftRepository aircraftRepository;
+    private final ReleaseService releaseService;
 
-    public WorkCardService(WorkCardRepository workCardRepository, AircraftRepository aircraftRepository) {
+    public WorkCardService(WorkCardRepository workCardRepository, AircraftRepository aircraftRepository,
+                           ReleaseService releaseService) {
         this.workCardRepository = workCardRepository;
         this.aircraftRepository = aircraftRepository;
+        this.releaseService = releaseService;
     }
 
     @Transactional(readOnly = true)
@@ -154,7 +157,11 @@ public class WorkCardService {
         card.setExecutor(req.getExecutor() == null || req.getExecutor().isBlank() ? null : req.getExecutor().trim());
         card.setInspector(null);
         card.setUpdatedAt(LocalDateTime.now());
-        return toView(workCardRepository.save(card), tailMap());
+        card = workCardRepository.save(card);
+        // 工卡事实变化：该机待审放行立即失效（新开工卡 = 新增关联工卡）
+        releaseService.invalidateOnFactChange(card.getAircraftId(),
+                "关联工卡发生变化：新开工卡 " + card.getCardNo());
+        return toView(card, tailMap());
     }
 
     /** 待派工 → 进行中 */
@@ -170,7 +177,10 @@ public class WorkCardService {
         card.setExecutor(executor);
         card.setStartTime(LocalDateTime.now());
         card.setUpdatedAt(LocalDateTime.now());
-        return toView(workCardRepository.save(card), tailMap());
+        card = workCardRepository.save(card);
+        releaseService.invalidateOnFactChange(card.getAircraftId(),
+                "关联工卡 " + card.getCardNo() + " 状态变为「进行中」");
+        return toView(card, tailMap());
     }
 
     /** 进行中 → 待检验（完工） */
@@ -191,7 +201,10 @@ public class WorkCardService {
         card.setActualHour(actualHour.setScale(2, RoundingMode.HALF_UP));
         card.setEndTime(LocalDateTime.now());
         card.setUpdatedAt(LocalDateTime.now());
-        return toView(workCardRepository.save(card), tailMap());
+        card = workCardRepository.save(card);
+        releaseService.invalidateOnFactChange(card.getAircraftId(),
+                "关联工卡 " + card.getCardNo() + " 状态变为「待检验」");
+        return toView(card, tailMap());
     }
 
     /** 待检验 → 已关闭（检验通过） */
@@ -209,7 +222,10 @@ public class WorkCardService {
         card.setStatus("CLOSED");
         card.setInspector(inspector);
         card.setUpdatedAt(LocalDateTime.now());
-        return toView(workCardRepository.save(card), tailMap());
+        card = workCardRepository.save(card);
+        releaseService.invalidateOnFactChange(card.getAircraftId(),
+                "关联工卡 " + card.getCardNo() + " 已检验关闭");
+        return toView(card, tailMap());
     }
 
     /** 取消工卡：只有待派工 / 进行中可取消 */
@@ -219,7 +235,10 @@ public class WorkCardService {
         requireFlow(card, "CANCELED");
         card.setStatus("CANCELED");
         card.setUpdatedAt(LocalDateTime.now());
-        return toView(workCardRepository.save(card), tailMap());
+        card = workCardRepository.save(card);
+        releaseService.invalidateOnFactChange(card.getAircraftId(),
+                "关联工卡 " + card.getCardNo() + " 被取消");
+        return toView(card, tailMap());
     }
 
     private WorkCard requireCard(Long id) {

@@ -102,6 +102,31 @@ public final class MroDict {
             "OUT", "在借未还",
             "BACK", "已归还");
 
+    // ---------------- 出厂放行审签 ----------------
+    /** 草稿：发起人可修订（写保留依据），尚未进入审签链 */
+    public static final String REL_DRAFT = "DRAFT";
+    /** 待机械放行 */
+    public static final String REL_WAIT_MECH = "WAIT_MECH";
+    /** 待质量终审 */
+    public static final String REL_WAIT_QA = "WAIT_QA";
+    /** 已放行：质量终审通过，允许出位（出位前都算有效放行） */
+    public static final String REL_RELEASED = "RELEASED";
+    /** 已驳回：回到可修订状态，再次提交必须形成新的证据快照 */
+    public static final String REL_REJECTED = "REJECTED";
+    /** 已失效：上游事实在快照之后变化 / 终审复核不过，签字保留但不得沿用 */
+    public static final String REL_INVALID = "INVALID";
+
+    private static final Map<String, String> RELEASE_STATUS = Map.of(
+            REL_DRAFT, "草稿",
+            REL_WAIT_MECH, "待机械放行",
+            REL_WAIT_QA, "待质量终审",
+            REL_RELEASED, "已放行",
+            REL_REJECTED, "已驳回",
+            REL_INVALID, "已失效");
+
+    /** 处在审签链上、上游一变就要立即失效的状态（草稿允许继续修订，不在其列） */
+    public static final List<String> RELEASE_PENDING_STATUSES = List.of(REL_WAIT_MECH, REL_WAIT_QA);
+
     // ---------------- 取值方法 ----------------
 
     public static boolean isValidModel(String model) {
@@ -195,6 +220,19 @@ public final class MroDict {
 
     public static String loanStatusName(String status) {
         return status == null ? "" : LOAN_STATUS.getOrDefault(status, status);
+    }
+
+    public static boolean isValidReleaseStatus(String status) {
+        return status != null && RELEASE_STATUS.containsKey(status);
+    }
+
+    public static String releaseStatusName(String status) {
+        return status == null ? "" : RELEASE_STATUS.getOrDefault(status, status);
+    }
+
+    /** 工卡是否已闭环（已关闭 / 已取消都不再占未闭环名额） */
+    public static boolean cardClosed(String status) {
+        return "CLOSED".equals(status) || "CANCELED".equals(status);
     }
 
     /**

@@ -36,10 +36,13 @@ public class DefectService {
 
     private final DefectRepository defectRepository;
     private final AircraftRepository aircraftRepository;
+    private final ReleaseService releaseService;
 
-    public DefectService(DefectRepository defectRepository, AircraftRepository aircraftRepository) {
+    public DefectService(DefectRepository defectRepository, AircraftRepository aircraftRepository,
+                         ReleaseService releaseService) {
         this.defectRepository = defectRepository;
         this.aircraftRepository = aircraftRepository;
+        this.releaseService = releaseService;
     }
 
     @Transactional
@@ -54,6 +57,9 @@ public class DefectService {
                 defect.setStatus("OVERDUE");
                 defect.setUpdatedAt(LocalDateTime.now());
                 defectRepository.save(defect);
+                // 故障状态变化（开放→超期）：该机待审放行立即失效，不能拿旧快照放行
+                releaseService.invalidateOnFactChange(defect.getAircraftId(),
+                        "故障 " + defect.getDefectNo() + " 已超过保留到期日，变为超期故障");
             }
         }
         Map<Long, String> tailMap = new HashMap<>();
@@ -119,7 +125,11 @@ public class DefectService {
         defect.setStatus(dueDate.isBefore(LocalDate.now()) ? "OVERDUE" : "OPEN");
         defect.setReporter(req.getReporter() == null || req.getReporter().isBlank() ? null : req.getReporter().trim());
         defect.setUpdatedAt(LocalDateTime.now());
-        return toView(defectRepository.save(defect), tailNoMap(aircraft), LocalDate.now());
+        defect = defectRepository.save(defect);
+        // 新增关联故障：待审放行的证据快照对不上当前事实，立即失效
+        releaseService.invalidateOnFactChange(defect.getAircraftId(),
+                "新增故障保留 " + defect.getDefectNo() + "（" + MroDict.defectStatusName(defect.getStatus()) + "）");
+        return toView(defect, tailNoMap(aircraft), LocalDate.now());
     }
 
     /** 关闭缺陷：已关闭的不能再关 */
@@ -132,7 +142,11 @@ public class DefectService {
         }
         defect.setStatus("CLOSED");
         defect.setUpdatedAt(LocalDateTime.now());
-        return toView(defectRepository.save(defect), tailNoMap(null), LocalDate.now());
+        defect = defectRepository.save(defect);
+        // 保留故障被闭环，也是维修事实变化：待审放行立即失效（差异视图可查）
+        releaseService.invalidateOnFactChange(defect.getAircraftId(),
+                "故障 " + defect.getDefectNo() + " 已关闭，维修事实变化");
+        return toView(defect, tailNoMap(null), LocalDate.now());
     }
 
     private Views.DefectView toView(Defect defect, Map<Long, String> tailMap, LocalDate today) {

@@ -77,3 +77,18 @@ export const partApi = {
 export const hangarApi = {
   overview: () => http.get('/hangar/overview')
 }
+
+/** 模块六：出厂放行审签（所有门禁/失效/并发判定都在服务端） */
+export const releaseApi = {
+  overview: (aircraftId) => http.get('/releases/overview', { params: aircraftId ? { aircraftId } : {} }),
+  gate: (aircraftId) => http.get('/releases/gate', { params: { aircraftId } }),
+  list: (aircraftId) => http.get('/releases', { params: aircraftId ? { aircraftId } : {} }),
+  detail: (id) => http.get(`/releases/${id}`),
+  create: (data) => http.post('/releases', data),
+  saveRetainBasis: (id, data) => http.post(`/releases/${id}/retain-basis`, data),
+  submit: (id, operator) => http.post(`/releases/${id}/submit`, { operator }),
+  mechSign: (id, signer) => http.post(`/releases/${id}/mech-sign`, { signer }),
+  confirmDefect: (id, data) => http.post(`/releases/${id}/confirm-defect`, data),
+  qaApprove: (id, signer) => http.post(`/releases/${id}/qa-approve`, { signer }),
+  reject: (id, data) => http.post(`/releases/${id}/reject`, data)
+}

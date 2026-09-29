@@ -29,6 +29,13 @@
         <div class="stat-chip" :class="{ 'is-alert': (overview.defectOverdue || 0) > 0 }">
           <b>{{ overview.defectOverdue || 0 }}</b><span>超期保留</span>
         </div>
+        <div class="stat-chip" :class="{ 'is-alert': (releaseOverview.pendingCount || 0) > 0 }">
+          <b>{{ releaseOverview.pendingCount || 0 }}</b><span>放行待审</span>
+        </div>
+        <div class="stat-chip" :class="{ 'is-alert': (releaseOverview.invalidCount || 0) > 0 }">
+          <b>{{ releaseOverview.invalidCount || 0 }}</b><span>放行已失效</span>
+        </div>
+        <div class="stat-chip"><b>{{ releaseOverview.releasedCount || 0 }}</b><span>已放行</span></div>
         <div class="stat-chip" :class="{ 'is-alert': (overview.partLow || 0) > 0 }">
           <b>{{ overview.partLow || 0 }}</b><span>低库存件</span>
         </div>
@@ -60,7 +67,7 @@
 import { computed, getCurrentInstance, onMounted, provide, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import router, { navItems } from './router'
-import { aircraftApi, hangarApi } from './api'
+import { aircraftApi, hangarApi, releaseApi } from './api'
 
 /**
  * 模板自带的 main.js 只装了 Element Plus，没装 router（那份文件不动它），
@@ -75,6 +82,7 @@ const nav = useRouter()
 const aircraftList = ref([])
 const aircraftId = ref(null)
 const overview = ref({})
+const releaseOverview = ref({})
 
 /**
  * 全局机号上下文：所有页面 inject('mro') 拿同一架飞机，
@@ -84,7 +92,9 @@ const mro = {
   aircraftId,
   aircraftList,
   overview,
+  releaseOverview,
   refreshOverview: loadOverview,
+  refreshReleaseOverview: loadReleaseOverview,
   reloadAircraft: loadAircraft
 }
 provide('mro', mro)
@@ -105,6 +115,7 @@ function go(path) {
 
 function onPickAircraft(id) {
   localStorage.setItem('mro-tail-id', String(id == null ? '' : id))
+  loadReleaseOverview()
 }
 
 async function loadAircraft() {
@@ -120,8 +131,12 @@ async function loadOverview() {
   overview.value = await hangarApi.overview()
 }
 
+async function loadReleaseOverview() {
+  releaseOverview.value = await releaseApi.overview(aircraftId.value)
+}
+
 onMounted(async () => {
   await loadAircraft()
-  await loadOverview()
+  await Promise.all([loadOverview(), loadReleaseOverview()])
 })
 </script>

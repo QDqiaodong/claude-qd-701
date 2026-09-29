@@ -135,7 +135,9 @@
 
         <div v-else-if="active.status === 'OCCUPIED'" class="inline-form">
           <el-button type="warning" @click="doRelease">安排出位（出厂）</el-button>
-          <span class="muted">停场待修的飞机排故未闭环不能出位</span>
+          <span class="muted">
+            须先在「出厂放行审签」由质量终审通过；无有效放行 / 已失效 / 放行对不上当前维修事实都会被服务端阻断
+          </span>
         </div>
 
         <div class="inline-form" style="margin-top: 10px">
@@ -260,10 +262,11 @@ async function doOccupy() {
 }
 
 async function doRelease() {
+  // 阻断提示完全由服务端给出（无放行记录/已失效/不是当前维修事实，口径与放行页一致）
   await bayApi.release(active.value.id)
-  ElMessage.success('飞机已出位')
+  ElMessage.success('飞机已凭终审放行出位')
   bayVisible.value = false
-  await Promise.all([load(), mro.reloadAircraft(), loadTimeline()])
+  await Promise.all([load(), mro.reloadAircraft(), loadTimeline(), mro.refreshReleaseOverview()])
 }
 
 async function doStatus(status) {

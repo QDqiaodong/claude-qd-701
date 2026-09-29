@@ -36,10 +36,13 @@ public class BayService {
 
     private final BayRepository bayRepository;
     private final AircraftRepository aircraftRepository;
+    private final ReleaseService releaseService;
 
-    public BayService(BayRepository bayRepository, AircraftRepository aircraftRepository) {
+    public BayService(BayRepository bayRepository, AircraftRepository aircraftRepository,
+                      ReleaseService releaseService) {
         this.bayRepository = bayRepository;
         this.aircraftRepository = aircraftRepository;
+        this.releaseService = releaseService;
     }
 
     @Transactional(readOnly = true)
@@ -123,11 +126,20 @@ public class BayService {
             aircraft.setAirworthy("INSPECTION");
             aircraft.setUpdatedAt(LocalDateTime.now());
             aircraftRepository.save(aircraft);
+            // 机位占用/适航状态变了：该机若还有卡在审签链上的旧放行（理论上出位已消费），立即失效
+            releaseService.invalidateOnFactChange(aircraft.getId(),
+                    "飞机重新进入机位 " + bay.getBayNo() + "，适航状态变更，开始新一轮维修");
         }
         return toView(bayRepository.save(bay));
     }
 
-    /** 飞机出位（出厂） */
+    /**
+     * 飞机出位（出厂）。
+     *
+     * <p>模块六接入后，出位的唯一合法凭据是"当前这一轮维修事实"对应的、质量终审已通过
+     * 且未消费的放行记录；没有记录 / 已失效 / 快照对不上当前事实，统一在此阻断，
+     * 与放行页门禁提示完全一致。校验与消费放行与机位更新在同一事务里完成。
+     */
     @Transactional
     public Views.BayView release(Long bayId) {
         Bay bay = bayRepository.findById(bayId)
@@ -139,7 +151,11 @@ public class BayService {
         if (aircraft != null && MroDict.AIRWORTHY_GROUNDED.equals(aircraft.getAirworthy())) {
             throw new BizException("飞机 " + aircraft.getTailNo() + " 处于停场待修，排故未闭环不得出厂");
         }
+        // 出厂放行门禁：没有效已放行记录 / 已失效 / 不是当前维修事实，全部在此被拦
+        var releaseOrder = releaseService.checkDepartureGate(bay, aircraft);
+
         bay.setStatus("IDLE");
+        Long aircraftId = bay.getCurrentAircraftId();
         bay.setCurrentAircraftId(null);
         bay.setUpdatedAt(LocalDateTime.now());
         if (aircraft != null && "INSPECTION".equals(aircraft.getAirworthy())) {
@@ -147,7 +163,12 @@ public class BayService {
             aircraft.setUpdatedAt(LocalDateTime.now());
             aircraftRepository.save(aircraft);
         }
-        return toView(bayRepository.save(bay));
+        Views.BayView view = toView(bayRepository.save(bay));
+        // 消费放行：标记已出位并写入审计（同一事务，并发第二个出位会在此被挡）
+        releaseService.markDeparted(releaseOrder, bay.getBayNo());
+        // 机位占用已解除，若仍有同机待审记录（正常不会有，防御性处理）立即失效
+        releaseService.invalidateOnFactChange(aircraftId, "飞机已从机位出位，机位占用解除");
+        return view;
     }
 
     /** 机位状态：启用 / 停用 */
